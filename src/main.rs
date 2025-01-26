@@ -1,8 +1,10 @@
-use std::sync::Arc;
+#![feature(duration_constructors)]
 
-use axum::extract::{Path, State};
-use axum_response_cache::CacheLayer;
+use std::{collections::HashMap, sync::Arc};
+
+use axum::extract::{Path, Query, State};
 use github::GitHub;
+use tokio::sync::Mutex;
 
 mod github;
 
@@ -10,12 +12,11 @@ const DEFAULT_BRANCH: &str = "master";
 
 #[tokio::main]
 async fn main() {
-    let github = Arc::new(github::GitHub::new().unwrap());
+    let github = Arc::new(Mutex::new(GitHub::new().unwrap()));
     
     let app = axum::Router::new()
         .route("/", axum::routing::get(get))
         .route("/{branch}", axum::routing::get(get_from_branch))
-        .layer(CacheLayer::with_lifespan(3600).use_stale_on_failure())
         .with_state(github);
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000")
@@ -24,8 +25,8 @@ async fn main() {
     axum::serve(listener, app).await.unwrap();
 }
 
-async fn get_latest_commit(branch: &str, github: Arc<GitHub>) -> Result<String, ()> {
-    let commit = github.get_latest_successful_commit(&branch).await.map_err(|_| ())?[..10].to_string();
+async fn get_latest_commit(branch: &str, github: Arc<Mutex<GitHub>>, parameters: HashMap<String, String>) -> Result<String, ()> {
+    let commit = github.lock().await.get_latest_successful_commit(&branch).await.map_err(|_| ())?[..10].to_string();
 
     let hash = if branch == DEFAULT_BRANCH {
         commit
@@ -33,13 +34,26 @@ async fn get_latest_commit(branch: &str, github: Arc<GitHub>) -> Result<String, 
         format!("{}-{}", branch, commit)
     };
 
-    Ok(format!("net.minestom:minestom-snapshots:{}", hash))
+    let dependency = format!("net.minestom:minestom-snapshots:{}", hash);
+
+    Ok(if parameters.contains_key("kts") {
+        format!(include_str!("templates/build.gradle.kts"), dependency)
+    } else {
+        dependency
+    })
 }
 
-async fn get_from_branch(Path(branch): Path<String>, State(github): State<Arc<GitHub>>) -> Result<String, ()> {
-    get_latest_commit(&branch, github).await
+async fn get_from_branch(
+    Path(branch): Path<String>,
+    Query(parameters): Query<HashMap<String, String>>,
+    State(github): State<Arc<Mutex<GitHub>>>
+) -> Result<String, ()> {
+    get_latest_commit(&branch, github, parameters).await
 }
 
-async fn get(State(github): State<Arc<GitHub>>) -> Result<String, ()> {
-    get_latest_commit(DEFAULT_BRANCH, github).await
+async fn get(
+    State(github): State<Arc<Mutex<GitHub>>>,
+    Query(parameters): Query<HashMap<String, String>>
+) -> Result<String, ()> {
+    get_latest_commit(DEFAULT_BRANCH, github, parameters).await
 }

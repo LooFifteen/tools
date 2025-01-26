@@ -1,19 +1,25 @@
+use std::time::Duration;
+
 use serde::Deserialize;
 use thiserror::Error;
+use ttl_cache::TtlCache;
 
 const URL: &str = "https://api.github.com/repos/Minestom/Minestom/commits";
+const CACHE_DURATION: Duration = Duration::from_hours(1);
 
 pub(crate) struct GitHub {
     client: reqwest::Client,
+    cache: TtlCache<String, String>,
 }
 
 impl GitHub {
     pub(crate) fn new() -> Result<Self, reqwest::Error> {
         let client = reqwest::Client::builder()
-            .user_agent("LooFifteen/minestom-ver v0.1.0")
+            .user_agent(format!("LooFifteen/tools v{}", env!("CARGO_PKG_VERSION")))
             .build()?;
         Ok(Self {
-            client
+            client,
+            cache: TtlCache::new(100), // arbitrary value
         })
     }
 
@@ -23,18 +29,26 @@ impl GitHub {
         Ok(response.json().await?)
     }
 
-    pub(crate) async fn get_latest_successful_commit(&self, branch: &str) -> Result<String, LatestCommitError> {
+    pub(crate) async fn get_latest_successful_commit(&mut self, branch: &str) -> Result<String, LatestCommitError> {
+        // if the commit is already in the cache, return it
+        if let Some(commit) = self.cache.get(branch) {
+            return Ok(commit.clone());
+        }
+
         let commits = self.get_latest_commit(branch).await?;
         if self.check_commit_run(&commits.sha).await? {
+            self.cache.insert(branch.to_string(), commits.sha.clone(), CACHE_DURATION);
             return Ok(commits.sha)
         }
 
         for parent in commits.parents.into_iter() {
             if self.check_commit_run(&parent.sha).await? {
+                self.cache.insert(branch.to_string(), parent.sha.clone(), CACHE_DURATION);
                 return Ok(parent.sha);
             }
         }
         
+        self.cache.insert(branch.to_string(), "not-found".to_string(), CACHE_DURATION);
         Err(LatestCommitError::NoSuccessfulCommit)
     }
 
