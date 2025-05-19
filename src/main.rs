@@ -1,4 +1,4 @@
-#![feature(duration_constructors)]
+#![feature(duration_constructors_lite)]
 
 use std::{collections::HashMap, sync::Arc};
 
