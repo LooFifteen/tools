@@ -40,3 +40,6 @@ rust-project.json
 
 ### Nix ###
 result
+
+### direnv ###
+.direnv/
